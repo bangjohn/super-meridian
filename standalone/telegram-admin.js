@@ -118,7 +118,7 @@ function readEnv() {
   return fs.existsSync(ENV_PATH) ? fs.readFileSync(ENV_PATH, "utf8") : "";
 }
 function envValue(key) {
-  const m = readEnv().match(new RegExp(`(?m)^${key}=(.*)$`));
+  const m = readEnv().match(new RegExp(`^${key}=(.*)$`, "m"));
   return m ? m[1].trim() : "";
 }
 function writeEnvValue(key, value) {
@@ -352,9 +352,24 @@ async function renderSection(messageId, sectionId) {
     ).catch(() => {});
   }
   if (sectionId === "key") {
-    const hasPk = !!process.env.WALLET_PRIVATE_KEY;
+    let deposit = config.standalone.walletAddress || null;
+    let keyState = "not set";
+    if (process.env.WALLET_PRIVATE_KEY) {
+      try {
+        deposit = parseSecretKey(process.env.WALLET_PRIVATE_KEY).publicKey.toString();
+        keyState = "configured ✓";
+      } catch { keyState = "configured but unreadable ⚠️"; }
+    }
+    let balanceLine = "";
+    if (deposit) {
+      try {
+        const { getWalletBalances } = await import("../tools/wallet.js");
+        const b = await getWalletBalances({ nativeOnly: true });
+        if (!b.error && Number.isFinite(b.sol)) balanceLine = `\nSOL balance: <b>${b.sol.toFixed(4)}</b>`;
+      } catch { /* balance is best-effort */ }
+    }
     return void await editMenu(messageId,
-      `🔑 <b>Bot wallet</b>\nSigning key: ${hasPk ? "configured ✓" : "not set (read-only/shadow)"}\nRead-only address: <code>${config.standalone.walletAddress || "not set"}</code>`,
+      `🔑 <b>Bot wallet</b>\n\n📥 <b>Deposit address:</b>\n<code>${deposit ?? "—"}</code>${balanceLine}\n\nSigning key: ${keyState}\nRead-only override: <code>${config.standalone.walletAddress || "not set"}</code>`,
       [
         [{ text: "📥 Import private key", callback_data: "k:imp" }],
         [{ text: "📤 Export private key", callback_data: "k:exp" }, { text: "📍 Set read-only address", callback_data: "k:addr" }],
@@ -443,8 +458,8 @@ async function handleText(text, msg) {
       if (p.kind === "pkimport") {
         const kp = parseSecretKey(text);
         writeEnvValue("WALLET_PRIVATE_KEY", bs58.encode(kp.secretKey));
-        delete process.env.WALLET_PRIVATE_KEY; // force lazy re-read from .env
-        return void await sendMenu(`✅ Key imported — wallet <code>${kp.publicKey.toString()}</code>\n\n♻️ Restart to sign with it.`, restartRow());
+        process.env.WALLET_PRIVATE_KEY = bs58.encode(kp.secretKey); // live immediately; .env survives restarts
+        return void await sendMenu(`✅ Key imported — wallet <code>${kp.publicKey.toString()}</code>\nSigning is active now (survives restarts).`, [[{ text: "← Bot key", callback_data: "s:key" }]]);
       }
       if (p.kind === "walletaddr") {
         if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(text.trim())) return void await sendMessage("⚠️ Not a valid address — send again, or /cancel");
