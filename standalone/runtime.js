@@ -322,6 +322,8 @@ async function shutdown(signalName) {
   log("runtime", `${signalName} received — shutting down`);
   for (const timer of Object.values(timers)) clearInterval(timer);
   try { await monitor?.stop(); } catch { /* best-effort */ }
+  // Best-effort stop notice; never let a slow Telegram call hold shutdown.
+  await Promise.race([notify(`🛑 Meridian stopped (${signalName})`), sleep(3000)]).catch(() => {});
   try { if (lockPath) fs.rmSync(lockPath, { force: true }); } catch { /* best-effort */ }
   process.exit(0);
 }
@@ -350,6 +352,9 @@ export async function startStandalone() {
   startPnlPoller();
   startHeartbeat();
   void manageOnce();
+
+  const trackedWallets = Object.keys(store.data.wallets).length;
+  void notify(`🤖 Meridian started — ${config.standalone.shadow ? "SHADOW (nothing submitted)" : "LIVE"}\n${trackedWallets} wallet(s) monitored | trigger: ${config.standalone.walletThreshold} within ${config.standalone.windowSec}s | exits: ${config.pnl.pollIntervalSec}s poller`);
 
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
