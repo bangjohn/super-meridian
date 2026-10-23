@@ -1,6 +1,7 @@
 import { config } from "../config.js";
 
 export function getAgentMeridianBase() {
+  if (config.standalone.enabled) throw new Error("Meridian server features are disabled in standalone mode");
   return String(config.api.url || "https://api.agentmeridian.xyz/api").replace(/\/+$/, "");
 }
 

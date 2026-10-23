@@ -64,6 +64,26 @@ function nonEmptyString(...values) {
 }
 
 export const config = {
+  // Standalone is the default. Shadow mode never submits transactions.
+  standalone: {
+    enabled: u.standaloneEnabled !== false,
+    shadow: u.shadowMode !== false,
+    monitorRpcUrl: nonEmptyString(process.env.MONITOR_RPC_URL, u.monitorRpcUrl, process.env.RPC_URL),
+    monitorWsUrl: nonEmptyString(process.env.MONITOR_WS_URL, u.monitorWsUrl),
+    balanceRpcUrl: nonEmptyString(process.env.BALANCE_RPC_URL, u.balanceRpcUrl, process.env.RPC_URL),
+    fallbackRpcUrl: nonEmptyString(process.env.FALLBACK_RPC_URL, u.fallbackRpcUrl),
+    walletAddress: nonEmptyString(process.env.WALLET_ADDRESS, u.walletAddress),
+    walletThreshold: u.walletThreshold ?? 2,
+    windowSec: u.walletWindowSec ?? 120,
+    screeningDeadlineSec: u.screeningDeadlineSec ?? 120,
+    retrySec: u.screeningRetrySec ?? 15,
+    reconcileSec: u.walletReconcileSec ?? 30,
+    minDepositSol: u.minSmartWalletDepositSol ?? 0.1,
+    maxPriceMovePct: u.maxEntryPriceMovePct ?? 5,
+    cooldownSec: u.walletSignalCooldownSec ?? 300,
+    maxPendingTransactions: u.maxPendingWalletTransactions ?? 1000,
+    walletGroups: u.walletGroups ?? {},
+  },
   // ─── Risk Limits ─────────────────────────
   risk: {
     maxPositions:    u.maxPositions    ?? 3,
@@ -196,7 +216,7 @@ export const config = {
     // Live position value comes from on-chain reads on this RPC.
     // Defaults to the public pump.helius endpoint so the aggressive poller
     // never burns the main RPC_URL or the LPAgent sponsor budget.
-    rpcUrl: nonEmptyString(u.pnlRpcUrl, process.env.PNL_RPC_URL, "https://pump.helius-rpc.com"),
+    rpcUrl: nonEmptyString(u.pnlRpcUrl, process.env.PNL_RPC_URL, process.env.RPC_URL, "https://api.mainnet-beta.solana.com"),
     source: nonEmptyString(u.pnlSource, "rpc"), // rpc | meteora (fallback-only)
     pollIntervalSec: Number(u.pnlPollIntervalSec ?? 3),
     depositCacheTtlSec: Number(u.pnlDepositCacheTtlSec ?? 300),
@@ -263,6 +283,9 @@ export const config = {
     requireAllIntervals: indicatorUserConfig.requireAllIntervals ?? false,
   },
 };
+
+// Shadow applies to every existing transaction path, including CLI commands.
+if (config.standalone.enabled && config.standalone.shadow) process.env.DRY_RUN = "true";
 
 /**
  * Compute the optimal deploy amount for a given wallet balance.

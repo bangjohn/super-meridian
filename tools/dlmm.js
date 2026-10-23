@@ -99,7 +99,7 @@ function getWallet() {
 }
 
 function shouldUseLpAgentRelay() {
-  return !!config.api.lpAgentRelayEnabled;
+  return !config.standalone.enabled && !!config.api.lpAgentRelayEnabled;
 }
 
 function shouldUseLpAgentRelayForDeploy() {
@@ -472,8 +472,11 @@ export async function deployPosition({
   entry_tvl,
   entry_volume,
   entry_holders,
+  before_submit,
+  on_prepared,
 }) {
   pool_address = normalizeMint(pool_address);
+  if (config.standalone.enabled && typeof before_submit !== "function") throw new Error("Standalone deploy requires a wallet signal");
   const activeStrategy = strategy || config.strategy.strategy;
   let activeBinsBelow = bins_below ?? config.strategy.defaultBinsBelow ?? config.strategy.minBinsBelow;
   let activeBinsAbove = bins_above ?? 0;
@@ -492,6 +495,7 @@ export async function deployPosition({
   const { StrategyType, getBinIdFromPrice, getPriceOfBinByBinId } = await getDLMM();
   const pool = await getPool(pool_address);
   const baseMint = pool.lbPair.tokenXMint.toString();
+  if (config.standalone.enabled && pool.lbPair.tokenYMint.toString() !== config.tokens.SOL) throw new Error("Standalone execution requires SOL as token Y");
   if (isBaseMintOnCooldown(baseMint)) {
     log("deploy", `Base mint ${baseMint.slice(0, 8)} is on cooldown — skipping deploy for pool ${pool_address.slice(0, 8)}`);
     return { success: false, error: "Token on cooldown — recently closed out-of-range too many times. Try a different token." };
@@ -769,6 +773,7 @@ export async function deployPosition({
 
   const wallet = getWallet();
   const newPosition = Keypair.generate();
+  await on_prepared?.(newPosition.publicKey.toString());
 
   log("deploy", `Pool: ${pool_address}`);
   log("deploy", `Strategy: ${activeStrategy}, Bins: ${minBinId} to ${maxBinId} (${totalBins} bins${isWideRange ? " — WIDE RANGE" : ""})`);
@@ -795,6 +800,7 @@ export async function deployPosition({
       const createTxArray = Array.isArray(createTxs) ? createTxs : [createTxs];
       for (let i = 0; i < createTxArray.length; i++) {
         const signers = i === 0 ? [wallet, newPosition] : [wallet];
+        await before_submit?.();
         const txHash = await sendAndConfirmTransaction(getConnection(), createTxArray[i], signers);
         txHashes.push(txHash);
         log("deploy", `Create tx ${i + 1}/${createTxArray.length}: ${txHash}`);
@@ -807,10 +813,11 @@ export async function deployPosition({
         totalXAmount: totalXLamports,
         totalYAmount: totalYLamports,
         strategy: { minBinId, maxBinId, strategyType },
-        slippage: 10, // 10%
+        slippage: config.standalone.enabled ? 1 : 10, // SDK expects percent
       });
       const addTxArray = Array.isArray(addTxs) ? addTxs : [addTxs];
       for (let i = 0; i < addTxArray.length; i++) {
+        await before_submit?.();
         const txHash = await sendAndConfirmTransaction(getConnection(), addTxArray[i], [wallet]);
         txHashes.push(txHash);
         log("deploy", `Add liquidity tx ${i + 1}/${addTxArray.length}: ${txHash}`);
@@ -823,8 +830,9 @@ export async function deployPosition({
         totalXAmount: totalXLamports,
         totalYAmount: totalYLamports,
         strategy: { maxBinId, minBinId, strategyType },
-        slippage: 1000, // 10% in bps
+        slippage: config.standalone.enabled ? 1 : 10, // SDK expects percent, not bps
       });
+      await before_submit?.();
       const txHash = await sendAndConfirmTransaction(getConnection(), tx, [wallet, newPosition]);
       txHashes.push(txHash);
     }
@@ -1153,7 +1161,7 @@ export async function getMyPositions({ force = false, silent = false, wallet_add
 
   let walletAddress;
   try {
-    walletAddress = walletOverride || getWallet().publicKey.toString();
+    walletAddress = walletOverride || config.standalone.walletAddress || getWallet().publicKey.toString();
   } catch {
     return { wallet: null, total_positions: 0, positions: [], error: "Wallet not configured" };
   }

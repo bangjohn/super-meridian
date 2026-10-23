@@ -9,6 +9,8 @@ import {
   closePosition,
   searchPools,
 } from "./dlmm.js";
+import { withWalletLock } from "../standalone/transactions.js";
+import { invalidateBalances } from "../standalone/balances.js";
 import { getWalletBalances, swapToken } from "./wallet.js";
 import { studyTopLPers } from "./study.js";
 import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons } from "../lessons.js";
@@ -74,7 +76,7 @@ async function fetchFreshPoolDetail(poolAddress, timeframe = config.screening.ti
   const encodedTimeframe = encodeURIComponent(timeframe);
   const filter = encodeURIComponent(`pool_address=${poolAddress}`);
   const url = `${POOL_DISCOVERY_BASE}/pools?page_size=1&filter_by=${filter}&timeframe=${encodedTimeframe}`;
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
   if (!res.ok) throw new Error(`Pool Discovery API error: ${res.status} ${res.statusText}`);
   const data = await res.json();
   return (data?.data || [])[0] ?? null;
@@ -610,13 +612,14 @@ async function swapBaseToSolWithRetry(baseMint, label) {
   let lastErr = null;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      const balances = await getWalletBalances({});
+      const balances = await getWalletBalances({ force: true });
+      if (balances.error) throw new Error("Balance unavailable after transaction");
       const token = balances.tokens?.find((t) => t.mint === baseMint);
-      if (!token || token.usd < 0.10) {
+      if (!token || token.balance <= 0 || (token.usd != null && token.usd < 0.10)) {
         // Nothing left to swap (already sold or dust) — treat as done.
         return { swapped: attempt > 1, result: null, token: null };
       }
-      log("executor", `Auto-swapping ${label} ${token.symbol || baseMint.slice(0, 8)} ($${token.usd.toFixed(2)}) back to SOL (attempt ${attempt}/${attempts})`);
+      log("executor", `Auto-swapping ${label} ${token.symbol || baseMint.slice(0, 8)} ($${token.usd == null ? "unknown" : token.usd.toFixed(2)}) back to SOL (attempt ${attempt}/${attempts})`);
       const swapResult = await swapToken({ input_mint: baseMint, output_mint: "SOL", amount: token.balance });
       const ok = swapResult && swapResult.success !== false && !swapResult.error && (swapResult.tx || swapResult.amount_out);
       if (ok) return { swapped: true, result: swapResult, token };
@@ -634,7 +637,14 @@ async function swapBaseToSolWithRetry(baseMint, label) {
 /**
  * Execute a tool call with safety checks and logging.
  */
-export async function executeTool(name, args) {
+export async function executeTool(name, args = {}) {
+  if (WRITE_TOOLS.has(name)) return withWalletLock(async () => {
+    try { return await executeToolUnlocked(name, args); }
+    finally { invalidateBalances(); }
+  }, name === "close_position" ? 10 : name === "deploy_position" ? 0 : 5);
+  return executeToolUnlocked(name, args);
+}
+async function executeToolUnlocked(name, args) {
   const startTime = Date.now();
 
   // Strip model artifacts like "<|channel|>commentary" appended to tool names
@@ -727,6 +737,9 @@ export async function executeTool(name, args) {
 async function runSafetyChecks(name, args) {
   switch (name) {
     case "deploy_position": {
+      if (config.standalone.enabled && typeof args.before_submit !== "function") {
+        return { pass: false, reason: "Standalone entries require a fresh wallet-convergence signal" };
+      }
       const poolThresholds = await validateDeployPoolThresholds(args);
       if (!poolThresholds.pass) return poolThresholds;
       if (poolThresholds.entryMarketData) Object.assign(args, poolThresholds.entryMarketData);
@@ -802,6 +815,7 @@ async function runSafetyChecks(name, args) {
 
       // Check position count limit + duplicate pool guard — force fresh scan to avoid stale cache
       const positions = await getMyPositions({ force: true });
+      if (positions.error || !Array.isArray(positions.positions)) return { pass: false, reason: "Position read unavailable" };
       if (positions.total_positions >= config.risk.maxPositions) {
         return {
           pass: false,
@@ -856,7 +870,8 @@ async function runSafetyChecks(name, args) {
 
       // Check SOL balance
       if (process.env.DRY_RUN !== "true") {
-        const balance = await getWalletBalances();
+        const balance = await getWalletBalances({ force: true, nativeOnly: true });
+        if (balance.error || !Number.isFinite(balance.sol)) return { pass: false, reason: "Balance read unavailable" };
         const gasReserve = config.management.gasReserve;
         const minRequired = amountY + gasReserve;
         if (balance.sol < minRequired) {
