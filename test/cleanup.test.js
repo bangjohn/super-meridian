@@ -95,3 +95,50 @@ test('active dependencies and configuration contain no retired agent integration
   const {config}=await import('../config.js');
   for(const key of ['llm','hiveMind','api','gmgn','indicators','darwin','opportunity']) assert.equal(config[key],undefined);
 });
+
+test('telegram admin menu schema is complete and every control renders', async () => {
+  const {config} = await import('../config.js');
+  const {_test} = await import('../standalone/telegram-admin.js');
+  const {SECTIONS, byKey, editHint, validate, sectionMenu, fmtValue} = _test;
+  assert.deepEqual(SECTIONS.map(s => s.id), ['trigger', 'screening', 'risk', 'strategy', 'exits', 'rpc']);
+  assert.ok(SECTIONS.some(s => s.id === 'strategy' && s.settings.some(x => x.k === 'strategy')), 'strategy shape must be configurable');
+
+  for (const section of SECTIONS) {
+    assert.ok(section.settings.length > 0, `${section.id} has settings`);
+    const menu = sectionMenu(section);
+    assert.ok(menu.text && menu.keyboard.length > 1, `${section.id} renders`);
+    for (const setting of section.settings) {
+      assert.equal(byKey.get(setting.k), setting, `${setting.k} registered`);
+      // These two threw on non-enum settings before the lazy-hint fix.
+      assert.ok(typeof editHint(setting) === 'string' && editHint(setting).length > 0, `${setting.k} hint renders`);
+      assert.ok(typeof fmtValue(setting) === 'string', `${setting.k} value renders`);
+      if (setting.path) {
+        let node = config;
+        for (const p of setting.path) node = node?.[p];
+        assert.notEqual(node, undefined, `${setting.k} path ${setting.path.join('.')} exists in live config`);
+      }
+      if (setting.type === 'enum' || setting.kind === 'enum') assert.ok(Array.isArray(setting.options) && setting.options.length, `${setting.k} has options`);
+    }
+  }
+
+  // validate() round-trips and rejects per type.
+  const byType = t => SECTIONS.flatMap(s => s.settings).find(s => s.type === t);
+  const intSetting = byType('int');
+  const inRange = Math.floor(((intSetting.min ?? 0) + (intSetting.max ?? 100)) / 2);
+  assert.equal(typeof validate(intSetting, String(inRange)), 'number');
+  assert.throws(() => validate(intSetting, 'abc'));
+  assert.throws(() => validate(intSetting, String((intSetting.max ?? 1e9) + 1)));
+  const boolSetting = byType('bool');
+  assert.equal(validate(boolSetting, 'on'), true);
+  assert.equal(validate(boolSetting, 'off'), false);
+  assert.throws(() => validate(boolSetting, 'maybe'));
+  const enumSetting = byType('enum');
+  assert.equal(validate(enumSetting, enumSetting.options[0]), enumSetting.options[0]);
+  assert.throws(() => validate(enumSetting, 'not-an-option'));
+  const listSetting = byType('list');
+  assert.deepEqual(validate(listSetting, 'a, b'), ['a', 'b']);
+  assert.deepEqual(validate(listSetting, 'none'), []);
+  const nullableSetting = byType('nullable');
+  assert.equal(validate(nullableSetting, 'off'), null);
+  assert.equal(validate(nullableSetting, '5'), 5);
+});

@@ -7,7 +7,7 @@
 import fs from "node:fs";
 import { Keypair } from "@solana/web3.js";
 import bs58 from "bs58";
-import { config } from "../config.js";
+import { config, MIN_SAFE_BINS_BELOW } from "../config.js";
 import { log } from "../logger.js";
 import { repoPath } from "../repo-root.js";
 import { addSmartWallet, removeSmartWallet, listSmartWallets } from "../smart-wallets.js";
@@ -65,6 +65,15 @@ const SECTIONS = [
       { k: "positionSizePct", path: ["management", "positionSizePct"], type: "float", min: 0.01, max: 1, unit: "fraction" },
       { k: "gasReserve", path: ["management", "gasReserve"], type: "float", min: 0, max: 10, unit: "SOL" },
       { k: "minSolToOpen", path: ["management", "minSolToOpen"], type: "float", min: 0, max: 100, unit: "SOL" },
+    ],
+  },
+  {
+    id: "strategy", title: "📐 Strategy", desc: "Position shape & bin range",
+    settings: [
+      { k: "strategy", path: ["strategy", "strategy"], type: "enum", options: ["spot", "curve", "bid_ask"], label: "shape" },
+      { k: "minBinsBelow", path: ["strategy", "minBinsBelow"], type: "int", min: MIN_SAFE_BINS_BELOW, max: 200, unit: "bins" },
+      { k: "maxBinsBelow", path: ["strategy", "maxBinsBelow"], type: "int", min: MIN_SAFE_BINS_BELOW, max: 200, unit: "bins" },
+      { k: "defaultBinsBelow", path: ["strategy", "defaultBinsBelow"], type: "int", min: MIN_SAFE_BINS_BELOW, max: 200, unit: "bins" },
     ],
   },
   {
@@ -212,8 +221,14 @@ function sectionMenu(section) {
     text: `${s.label ?? s.k}: ${fmtValue(s)}`,
     callback_data: s.type === "bool" ? `t:${s.k}` : `e:${s.k}`,
   }]);
+  const explainers = {
+    strategy:
+      "Range: bins below the active bin scale with pool volatility, clamped to min–max (bins above = 0). " +
+      "Shape: spot = flat, curve = bell, bid_ask = concentrated at the center. Applied per entry, no restart.",
+    rpc: "Endpoints live in .env — edit, then ♻️ Restart.",
+  };
   return {
-    text: `<b>${section.title}</b>\n<i>${section.desc}</i>\nTap a value to edit${section.id === "rpc" ? " — changes write to .env" : ""}.`,
+    text: `<b>${section.title}</b>\n<i>${section.desc}</i>\nTap a value to edit${explainers[section.id] ? `\n\n${explainers[section.id]}` : ""}.`,
     keyboard: [...rows, [{ text: "← Back", callback_data: "s:root" }]],
   };
 }
@@ -230,16 +245,23 @@ function cancelKB() {
   return [[{ text: "✖️ Cancel", callback_data: "x:cancel" }]];
 }
 
+function editHint(setting) {
+  switch (setting.type) {
+    case "bool": return "Send 'on' or 'off'";
+    case "enum": return `Send one of: ${setting.options.join(", ")}`;
+    case "list": return "Send comma-separated values, or 'none' for an empty list";
+    case "nullable": return "Send a number, or 'off' for no limit";
+    case "env":
+      if (setting.kind === "enum") return `Send one of: ${setting.options.join(", ")}`;
+      if (setting.kind === "secret") return "Send the key";
+      return "Send the URL (empty clears it)";
+    default: return "Send the new value";
+  }
+}
+
 async function startEdit(setting) {
   pending = { kind: "set", setting };
-  const hints = {
-    bool: "Send 'on' or 'off'",
-    enum: `Send one of: ${setting.options.join(", ")}`,
-    list: "Send comma-separated values, or 'none' for an empty list",
-    nullable: "Send a number, or 'off' for no limit",
-    env: setting.kind === "enum" ? `Send one of: ${setting.options.join(", ")}` : setting.kind === "secret" ? "Send the key" : "Send the URL (empty clears it)",
-  };
-  await sendMenu(`✏️ <b>${setting.label ?? setting.k}</b>\nCurrent: <code>${fmtValue(setting)}</code>\n\n${hints[setting.type] ?? "Send the new value"}`, cancelKB());
+  await sendMenu(`✏️ <b>${setting.label ?? setting.k}</b>\nCurrent: <code>${fmtValue(setting)}</code>\n\n${editHint(setting)}`, cancelKB());
 }
 
 async function handleCallback(cb) {
@@ -497,6 +519,9 @@ async function handleText(text, msg) {
 // ─── Wiring ──────────────────────────────────────────────────────────────────
 
 const adminContext = { monitor: null, activeSignals: null };
+
+// Exposed for the menu-schema tests in test/cleanup.test.js.
+export const _test = { SECTIONS, byKey, editHint, validate, sectionMenu, fmtValue };
 
 export function startAdmin({ monitor = null, activeSignals = null } = {}) {
   adminContext.monitor = monitor;
