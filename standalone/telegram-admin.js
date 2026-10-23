@@ -1,6 +1,8 @@
-// Telegram admin console: inline menus grouped by function. Every change is
-// persisted (user-config.json or .env) and applied live where possible;
-// restart-flagged settings say so and offer the restart button.
+// Telegram admin console: one persistent inline-menu message, grouped by
+// function. The message you tap becomes the console; every navigation, edit
+// prompt, and confirmation re-renders that same message — no new message per
+// tap. Changes persist to user-config.json (or .env) and apply live where
+// possible; restart-flagged settings offer the restart button.
 //
 // Authorization is enforced by startAdminPolling (TELEGRAM_ALLOWED_USER_IDS).
 
@@ -11,10 +13,19 @@ import { config, MIN_SAFE_BINS_BELOW } from "../config.js";
 import { log } from "../logger.js";
 import { repoPath } from "../repo-root.js";
 import { addSmartWallet, removeSmartWallet, listSmartWallets } from "../smart-wallets.js";
-import { sendMessage, sendMenu, editMenu, answerCallbackQuery, startAdminPolling } from "../telegram.js";
+import { sendMessage, sendMenu, editMenu, answerCallbackQuery, setBotCommands, startAdminPolling } from "../telegram.js";
 
 const USER_CONFIG_PATH = repoPath("user-config.json");
 const ENV_PATH = repoPath(".env");
+
+export const ADMIN_COMMANDS = [
+  { command: "menu", description: "Open the settings console" },
+  { command: "status", description: "Bot status, monitor stats, positions" },
+  { command: "wallets", description: "List monitored wallets" },
+  { command: "addwallet", description: "Add a monitored wallet: /addwallet <address> <name>" },
+  { command: "removewallet", description: "Remove a monitored wallet: /removewallet <address>" },
+  { command: "cancel", description: "Abort the current edit" },
+];
 
 // ─── Settings schema ─────────────────────────────────────────────────────────
 // k: user-config key (or ENV: key for .env-backed entries)
@@ -146,6 +157,27 @@ function currentValue(setting) {
   return v;
 }
 
+// ─── Console message: one message, re-rendered in place ─────────────────────
+
+let consoleMessageId = null;
+let lastRenderSig = null;
+
+// Render into the console message. Tapping any older menu message adopts it
+// as the console, so navigation never spawns new messages.
+async function render(text, keyboard) {
+  const sig = `${text}\u0000${JSON.stringify(keyboard ?? [])}`;
+  if (consoleMessageId != null) {
+    if (sig === lastRenderSig) return consoleMessageId; // identical content — Telegram would reject the edit
+    const res = await editMenu(consoleMessageId, text, keyboard).catch(() => null);
+    if (res?.ok) { lastRenderSig = sig; return consoleMessageId; }
+    consoleMessageId = null; // stale id (deleted or too old) — resend below
+  }
+  const sent = await sendMenu(text, keyboard);
+  consoleMessageId = sent?.result?.message_id ?? null;
+  lastRenderSig = consoleMessageId != null ? sig : null;
+  return consoleMessageId;
+}
+
 // ─── Validation + save ───────────────────────────────────────────────────────
 
 function validate(setting, raw) {
@@ -165,8 +197,7 @@ function validate(setting, raw) {
     return text;
   }
   if (setting.type === "list") {
-    const items = text === "" || text.toLowerCase() === "none" ? [] : text.split(",").map(s => s.trim()).filter(Boolean);
-    return items;
+    return text === "" || text.toLowerCase() === "none" ? [] : text.split(",").map(s => s.trim()).filter(Boolean);
   }
   if (setting.type === "nullable") {
     if (["off", "null", "none", "-"].includes(text.toLowerCase())) return null;
@@ -216,6 +247,24 @@ function rootKeyboard() {
   ];
 }
 
+function rootText() {
+  return `<b>⚙️ Meridian admin</b>\n<i>${config.standalone.shadow ? "🌑 SHADOW — nothing is submitted" : "🔴 LIVE — real transactions"}</i>\nPick a section:`;
+}
+
+function editHint(setting) {
+  switch (setting.type) {
+    case "bool": return "Send 'on' or 'off'";
+    case "enum": return `Send one of: ${setting.options.join(", ")}`;
+    case "list": return "Send comma-separated values, or 'none' for an empty list";
+    case "nullable": return "Send a number, or 'off' for no limit";
+    case "env":
+      if (setting.kind === "enum") return `Send one of: ${setting.options.join(", ")}`;
+      if (setting.kind === "secret") return "Send the key";
+      return "Send the URL (empty clears it)";
+    default: return "Send the new value";
+  }
+}
+
 function sectionMenu(section) {
   const rows = section.settings.map(s => [{
     text: `${s.label ?? s.k}: ${fmtValue(s)}`,
@@ -233,145 +282,23 @@ function sectionMenu(section) {
   };
 }
 
-function restartRow() {
-  return [{ text: "♻️ Restart now", callback_data: "m:restart" }];
+const cancelKB = () => [[{ text: "✖️ Cancel", callback_data: "x:cancel" }]];
+const restartRow = () => [{ text: "♻️ Restart now", callback_data: "m:restart" }];
+
+// ─── Views ───────────────────────────────────────────────────────────────────
+
+async function viewRoot() {
+  await render(rootText(), rootKeyboard());
 }
 
-// ─── State machine ───────────────────────────────────────────────────────────
-
-let pending = null; // { kind, setting?|address?, label }
-
-function cancelKB() {
-  return [[{ text: "✖️ Cancel", callback_data: "x:cancel" }]];
-}
-
-function editHint(setting) {
-  switch (setting.type) {
-    case "bool": return "Send 'on' or 'off'";
-    case "enum": return `Send one of: ${setting.options.join(", ")}`;
-    case "list": return "Send comma-separated values, or 'none' for an empty list";
-    case "nullable": return "Send a number, or 'off' for no limit";
-    case "env":
-      if (setting.kind === "enum") return `Send one of: ${setting.options.join(", ")}`;
-      if (setting.kind === "secret") return "Send the key";
-      return "Send the URL (empty clears it)";
-    default: return "Send the new value";
-  }
-}
-
-async function startEdit(setting) {
-  pending = { kind: "set", setting };
-  await sendMenu(`✏️ <b>${setting.label ?? setting.k}</b>\nCurrent: <code>${fmtValue(setting)}</code>\n\n${editHint(setting)}`, cancelKB());
-}
-
-async function handleCallback(cb) {
-  const data = cb.data || "";
-  const messageId = cb.message?.message_id;
-  await answerCallbackQuery(cb.id).catch(() => {});
-  try {
-    if (data === "x:cancel") {
-      pending = null;
-      await editMenu(messageId, "Cancelled.").catch(() => {});
-      return;
-    }
-    if (data === "s:root") {
-      pending = null;
-      return void await editMenu(messageId, rootText(), rootKeyboard()).catch(() => sendMenu(rootText(), rootKeyboard()));
-    }
-    if (data.startsWith("s:")) return void await renderSection(messageId, data.slice(2));
-    if (data.startsWith("t:")) {
-      const setting = byKey.get(data.slice(2));
-      if (!setting) return;
-      applySetting(setting, !currentValue(setting));
-      const section = SECTIONS.find(s => s.settings.includes(setting));
-      const menu = sectionMenu(section);
-      await editMenu(messageId, `${menu.text}\n\n✅ Saved`, menu.keyboard).catch(() => {});
-      return;
-    }
-    if (data.startsWith("e:")) {
-      const setting = byKey.get(data.slice(2));
-      if (setting) await startEdit(setting);
-      return;
-    }
-    if (data === "w:add") {
-      pending = { kind: "waddr" };
-      return void await sendMenu("👛 Send the wallet <b>address</b>:", cancelKB());
-    }
-    if (data.startsWith("w:rm2:")) {
-      const { wallets } = listSmartWallets();
-      const w = wallets[Number(data.slice(6))];
-      if (!w) return void await sendMessage("Wallet not found.");
-      const res = removeSmartWallet({ address: w.address });
-      return void await sendMessage(res.success ? `🗑 Removed ${w.name}` : `⚠️ ${res.error}`);
-    }
-    if (data.startsWith("w:rm:")) {
-      const { wallets } = listSmartWallets();
-      const w = wallets[Number(data.slice(5))];
-      if (!w) return void await sendMessage("Wallet not found.");
-      return void await sendMenu(`Remove <b>${w.name}</b>\n<code>${w.address}</code>?`, [
-        [{ text: "🗑 Confirm remove", callback_data: `w:rm2:${data.slice(5)}` }, { text: "✖️ Cancel", callback_data: "s:wallets" }],
-      ]);
-    }
-    if (data === "k:imp") {
-      pending = { kind: "pkimport" };
-      return void await sendMenu(
-        "🔑 Send the private key — base58 secret <b>or</b> JSON byte array.\n\n⚠️ The message will stay in this chat until you delete it.",
-        cancelKB(),
-      );
-    }
-    if (data === "k:exp") {
-      return void await sendMenu("⚠️ <b>Export sends the private key into this chat.</b>\nTelegram history is kept server-side. Anyone with access to this account gets the key.\n\nExport anyway?", [
-        [{ text: "👁 Show key", callback_data: "k:exp2" }, { text: "✖️ Cancel", callback_data: "s:key" }],
-      ]);
-    }
-    if (data === "k:exp2") {
-      const raw = process.env.WALLET_PRIVATE_KEY;
-      if (!raw) return void await sendMessage("No WALLET_PRIVATE_KEY configured.");
-      let kp;
-      try { kp = parseSecretKey(raw); } catch { return void await sendMessage("⚠️ Stored key is unreadable."); }
-      await sendMessage(`🔑 <code>${bs58.encode(kp.secretKey)}</code>\n\n⚠️ Delete this message from the chat history now.`);
-      return;
-    }
-    if (data === "k:addr") {
-      pending = { kind: "walletaddr" };
-      return void await sendMenu("📍 Send the read-only wallet <b>address</b> (public key):", cancelKB());
-    }
-    if (data === "m:shadow") {
-      const next = !config.standalone.shadow;
-      return void await sendMenu(`Set mode to <b>${next ? "SHADOW (nothing submitted)" : "LIVE"}</b>?`, [
-        [{ text: next ? "🌑 Shadow" : "🔴 LIVE", callback_data: "m:shadow2" }, { text: "✖️ Cancel", callback_data: "s:root" }],
-      ]);
-    }
-    if (data === "m:shadow2") {
-      const next = !config.standalone.shadow;
-      writeUserConfig({ shadowMode: next });
-      config.standalone.shadow = next;
-      // Transaction paths read DRY_RUN per call; honor an explicit .env DRY_RUN when going live.
-      if (next) process.env.DRY_RUN = "true";
-      else if (envValue("DRY_RUN") !== "true") delete process.env.DRY_RUN;
-      await sendMessage(`✅ Mode: <b>${next ? "SHADOW" : "LIVE"}</b>${next ? "" : "\n🔴 The bot will now SUBMIT real transactions."}`);
-      return;
-    }
-    if (data === "m:restart") {
-      return void await sendMenu("♻️ Restart the bot? (takes ~5s)", [
-        [{ text: "♻️ Confirm restart", callback_data: "m:restart2" }, { text: "✖️ Cancel", callback_data: "s:root" }],
-      ]);
-    }
-    if (data === "m:restart2") return void requestRestart();
-  } catch (e) {
-    log("telegram_error", `admin callback failed: ${e.message}`);
-    await sendMessage(`⚠️ ${e.message}`).catch(() => {});
-  }
-}
-
-async function renderSection(messageId, sectionId) {
+async function viewSection(sectionId, note = "") {
   if (sectionId === "wallets") {
     const { wallets } = listSmartWallets();
     const rows = wallets.map((w, i) => [{ text: `🗑 ${w.name}`, callback_data: `w:rm:${i}` }]);
-    return void await editMenu(messageId,
-      `👛 <b>Monitored wallets</b> (${wallets.length})\n${wallets.map(w => `• <b>${w.name}</b>\n<code>${w.address}</code>`).join("\n") || "none — add at least 2 to trigger entries"}`,
+    return void await render(
+      `👛 <b>Monitored wallets</b> (${wallets.length})\n${wallets.map(w => `• <b>${w.name}</b>\n<code>${w.address}</code>`).join("\n") || "none — add at least 2 to trigger entries"}${note ? `\n\n${note}` : ""}`,
       [...rows, [{ text: "➕ Add wallet", callback_data: "w:add" }, { text: "← Back", callback_data: "s:root" }]],
-    ).catch(() => {});
+    );
   }
   if (sectionId === "key") {
     let deposit = config.standalone.walletAddress || null;
@@ -390,24 +317,22 @@ async function renderSection(messageId, sectionId) {
         if (!b.error && Number.isFinite(b.sol)) balanceLine = `\nSOL balance: <b>${b.sol.toFixed(4)}</b>`;
       } catch { /* balance is best-effort */ }
     }
-    return void await editMenu(messageId,
-      `🔑 <b>Bot wallet</b>\n\n📥 <b>Deposit address:</b>\n<code>${deposit ?? "—"}</code>${balanceLine}\n\nSigning key: ${keyState}\nRead-only override: <code>${config.standalone.walletAddress || "not set"}</code>`,
+    return void await render(
+      `🔑 <b>Bot wallet</b>\n\n📥 <b>Deposit address:</b>\n<code>${deposit ?? "—"}</code>${balanceLine}\n\nSigning key: ${keyState}\nRead-only override: <code>${config.standalone.walletAddress || "not set"}</code>${note ? `\n\n${note}` : ""}`,
       [
         [{ text: "📥 Import private key", callback_data: "k:imp" }],
         [{ text: "📤 Export private key", callback_data: "k:exp" }, { text: "📍 Set read-only address", callback_data: "k:addr" }],
         [{ text: "← Back", callback_data: "s:root" }],
       ],
-    ).catch(() => {});
+    );
   }
   if (sectionId === "status") {
-    return void await editMenu(messageId, await statusText(), [[{ text: "🔄 Refresh", callback_data: "s:status" }, { text: "← Back", callback_data: "s:root" }]]).catch(() => {});
+    return void await render(await statusText(), [[{ text: "🔄 Refresh", callback_data: "s:status" }, { text: "← Back", callback_data: "s:root" }]]);
   }
   const section = SECTIONS.find(s => s.id === sectionId);
-  if (section) await editMenu(messageId, sectionMenu(section).text, sectionMenu(section).keyboard).catch(() => {});
-}
-
-function rootText() {
-  return `<b>⚙️ Meridian admin</b>\n<i>${config.standalone.shadow ? "🌑 SHADOW — nothing is submitted" : "🔴 LIVE — real transactions"}</i>\nPick a section:`;
+  if (!section) return void await viewRoot();
+  const menu = sectionMenu(section);
+  await render(note ? `${menu.text}\n\n${note}` : menu.text, menu.keyboard);
 }
 
 async function statusText() {
@@ -449,8 +374,101 @@ function requestRestart() {
   })();
 }
 
-async function handleText(text, msg) {
-  // Pending edit flows consume the next message.
+// ─── Callbacks ───────────────────────────────────────────────────────────────
+
+let pending = null; // { kind, setting?|address? }
+
+async function handleCallback(cb) {
+  const data = cb.data || "";
+  // Whatever message the user taps becomes the console.
+  if (cb.message?.message_id) consoleMessageId = cb.message.message_id;
+  await answerCallbackQuery(cb.id).catch(() => {});
+  try {
+    if (data === "x:cancel") { pending = null; return void await viewRoot(); }
+    if (data === "s:root") { pending = null; return void await viewRoot(); }
+    if (data.startsWith("s:")) { pending = null; return void await viewSection(data.slice(2)); }
+    if (data.startsWith("t:")) {
+      const setting = byKey.get(data.slice(2));
+      if (!setting) return;
+      const needs = applySetting(setting, !currentValue(setting));
+      return void await viewSection(SECTIONS.find(s => s.settings.includes(setting))?.id, `✅ Saved${needs ? " — ♻️ restart to apply" : ""}`);
+    }
+    if (data.startsWith("e:")) {
+      const setting = byKey.get(data.slice(2));
+      if (!setting) return;
+      pending = { kind: "set", setting };
+      return void await render(`✏️ <b>${setting.label ?? setting.k}</b>\nCurrent: <code>${fmtValue(setting)}</code>\n\n${editHint(setting)}`, cancelKB());
+    }
+    if (data === "w:add") {
+      pending = { kind: "waddr" };
+      return void await render("👛 Send the wallet <b>address</b>:", cancelKB());
+    }
+    if (data.startsWith("w:rm2:")) {
+      const { wallets } = listSmartWallets();
+      const w = wallets[Number(data.slice(6))];
+      if (!w) return void await viewSection("wallets", "⚠️ Wallet not found.");
+      const res = removeSmartWallet({ address: w.address });
+      return void await viewSection("wallets", res.success ? `🗑 Removed ${w.name}` : `⚠️ ${res.error}`);
+    }
+    if (data.startsWith("w:rm:")) {
+      const { wallets } = listSmartWallets();
+      const w = wallets[Number(data.slice(5))];
+      if (!w) return void await viewSection("wallets", "⚠️ Wallet not found.");
+      return void await render(`Remove <b>${w.name}</b>\n<code>${w.address}</code>?`, [
+        [{ text: "🗑 Confirm remove", callback_data: `w:rm2:${data.slice(5)}` }, { text: "✖️ Cancel", callback_data: "s:wallets" }],
+      ]);
+    }
+    if (data === "k:imp") {
+      pending = { kind: "pkimport" };
+      return void await render("🔑 Send the private key — base58 secret <b>or</b> JSON byte array.\n\n⚠️ The message will stay in this chat until you delete it.", cancelKB());
+    }
+    if (data === "k:exp") {
+      return void await render("⚠️ <b>Export sends the private key into this chat.</b>\nTelegram history is kept server-side. Anyone with access to this account gets the key.\n\nExport anyway?", [
+        [{ text: "👁 Show key", callback_data: "k:exp2" }, { text: "✖️ Cancel", callback_data: "s:key" }],
+      ]);
+    }
+    if (data === "k:exp2") {
+      const raw = process.env.WALLET_PRIVATE_KEY;
+      if (!raw) { await sendMessage("No WALLET_PRIVATE_KEY configured."); return void await viewSection("key"); }
+      let kp;
+      try { kp = parseSecretKey(raw); } catch { await sendMessage("⚠️ Stored key is unreadable."); return void await viewSection("key"); }
+      // The key itself goes out as its own message so it is easy to find and delete.
+      await sendMessage(`🔑 <code>${bs58.encode(kp.secretKey)}</code>\n\n⚠️ Delete this message from the chat history now.`);
+      return void await viewSection("key", "Key shown above — delete that message now.");
+    }
+    if (data === "k:addr") {
+      pending = { kind: "walletaddr" };
+      return void await render("📍 Send the read-only wallet <b>address</b> (public key):", cancelKB());
+    }
+    if (data === "m:shadow") {
+      const next = !config.standalone.shadow;
+      return void await render(`Set mode to <b>${next ? "SHADOW (nothing submitted)" : "LIVE"}</b>?`, [
+        [{ text: next ? "🌑 Shadow" : "🔴 LIVE", callback_data: "m:shadow2" }, { text: "✖️ Cancel", callback_data: "s:root" }],
+      ]);
+    }
+    if (data === "m:shadow2") {
+      const next = !config.standalone.shadow;
+      writeUserConfig({ shadowMode: next });
+      config.standalone.shadow = next;
+      if (next) process.env.DRY_RUN = "true";
+      else if (envValue("DRY_RUN") !== "true") delete process.env.DRY_RUN;
+      return void await viewRoot();
+    }
+    if (data === "m:restart") {
+      return void await render("♻️ Restart the bot? (takes ~5s)", [
+        [{ text: "♻️ Confirm restart", callback_data: "m:restart2" }, { text: "✖️ Cancel", callback_data: "s:root" }],
+      ]);
+    }
+    if (data === "m:restart2") return void requestRestart();
+  } catch (e) {
+    log("telegram_error", `admin callback failed: ${e.message}`);
+    await viewRoot(`⚠️ ${e.message}`).catch(() => {});
+  }
+}
+
+// ─── Text input ──────────────────────────────────────────────────────────────
+
+async function handleText(text) {
   if (pending) {
     const p = pending;
     pending = null;
@@ -458,61 +476,55 @@ async function handleText(text, msg) {
       if (p.kind === "set") {
         const value = validate(p.setting, text);
         const needs = applySetting(p.setting, value);
-        const section = SECTIONS.find(s => s.settings.includes(p.setting));
-        const menu = sectionMenu(section);
-        await sendMenu(`✅ <b>${p.setting.label ?? p.setting.k}</b> → <code>${fmtValue(p.setting)}</code>${needs ? "\n\n♻️ Applies after restart" : ""}`,
-          [...(needs ? [restartRow()] : []), ...menu.keyboard]);
-        return;
+        const sectionId = SECTIONS.find(s => s.settings.includes(p.setting))?.id;
+        return void await viewSection(sectionId, `✅ <b>${p.setting.label ?? p.setting.k}</b> → <code>${fmtValue(p.setting)}</code>${needs ? "\n♻️ Applies after restart" : ""}`);
       }
       if (p.kind === "waddr") {
         if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(text.trim())) {
           pending = { kind: "waddr" };
-          return void await sendMessage("⚠️ Not a valid Solana address — send it again, or /cancel");
+          return void await render("⚠️ Not a valid Solana address — send it again, or tap Cancel:", cancelKB());
         }
         pending = { kind: "wname", address: text.trim() };
-        return void await sendMenu("Name this wallet:", cancelKB());
+        return void await render("Name this wallet:", cancelKB());
       }
       if (p.kind === "wname") {
         const name = text.trim().slice(0, 40) || "wallet";
         const res = addSmartWallet({ address: p.address, name });
-        return void await sendMessage(res.success ? `✅ Added <b>${name}</b>\n<code>${p.address}</code>` : `⚠️ ${res.error}`);
+        return void await viewSection("wallets", res.success ? `✅ Added <b>${name}</b>\n<code>${p.address}</code>` : `⚠️ ${res.error}`);
       }
       if (p.kind === "pkimport") {
         const kp = parseSecretKey(text);
         writeEnvValue("WALLET_PRIVATE_KEY", bs58.encode(kp.secretKey));
         process.env.WALLET_PRIVATE_KEY = bs58.encode(kp.secretKey); // live immediately; .env survives restarts
-        return void await sendMenu(`✅ Key imported — wallet <code>${kp.publicKey.toString()}</code>\nSigning is active now (survives restarts).`, [[{ text: "← Bot key", callback_data: "s:key" }]]);
+        return void await viewSection("key", `✅ Key imported — wallet <code>${kp.publicKey.toString()}</code>\nSigning is active now (survives restarts).`);
       }
       if (p.kind === "walletaddr") {
-        if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(text.trim())) return void await sendMessage("⚠️ Not a valid address — send again, or /cancel");
+        if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(text.trim())) return void await render("⚠️ Not a valid address — send again, or tap Cancel:", cancelKB());
         writeUserConfig({ walletAddress: text.trim() });
         config.standalone.walletAddress = text.trim();
-        return void await sendMessage(`✅ Read-only address set: <code>${text.trim()}</code>`);
+        return void await viewSection("key", `✅ Read-only address set: <code>${text.trim()}</code>`);
       }
     } catch (e) {
-      return void await sendMessage(`⚠️ ${e.message} — try again or /cancel`);
+      return void await render(`⚠️ ${e.message} — try again or tap Cancel`, cancelKB());
     }
   }
 
   const [cmd, ...args] = text.trim().split(/\s+/);
-  if (cmd === "/cancel") { pending = null; return void await sendMessage("Cancelled."); }
+  if (cmd === "/cancel") { pending = null; return void await viewRoot("Cancelled."); }
   if (cmd === "/start" || cmd === "/help" || cmd === "/menu") {
-    return void await sendMenu(rootText() + `\n\n/addwallet &lt;address&gt; &lt;name&gt; — add monitored wallet\n/removewallet &lt;address&gt;\n/wallets — list\n/status — bot status\n/cancel — abort an edit`, rootKeyboard());
+    return void await viewRoot("Commands: /addwallet <address> <name> · /removewallet <address> · /wallets · /status · /cancel");
   }
-  if (cmd === "/status") return void await sendMessage(await statusText());
-  if (cmd === "/wallets") {
-    const { wallets } = listSmartWallets();
-    return void await sendMessage(`👛 ${wallets.length} wallet(s):\n${wallets.map(w => `• <b>${w.name}</b> <code>${w.address}</code>`).join("\n") || "none"}`);
-  }
+  if (cmd === "/status") return void await viewSection("status");
+  if (cmd === "/wallets") return void await viewSection("wallets");
   if (cmd === "/addwallet") {
     const address = args[0];
     const name = args.slice(1).join(" ").slice(0, 40) || "wallet";
     const res = addSmartWallet({ address: address ?? "", name });
-    return void await sendMessage(res.success ? `✅ Added <b>${name}</b> <code>${address}</code>` : `⚠️ ${res.error}`);
+    return void await viewSection("wallets", res.success ? `✅ Added <b>${name}</b> <code>${address}</code>` : `⚠️ ${res.error}`);
   }
   if (cmd === "/removewallet") {
     const res = removeSmartWallet({ address: args[0] ?? "" });
-    return void await sendMessage(res.success ? `🗑 Removed ${res.removed}` : `⚠️ ${res.error}`);
+    return void await viewSection("wallets", res.success ? `🗑 Removed ${res.removed}` : `⚠️ ${res.error}`);
   }
 }
 
@@ -528,7 +540,8 @@ export function startAdmin({ monitor = null, activeSignals = null } = {}) {
   adminContext.activeSignals = activeSignals;
   const stop = startAdminPolling(async ({ message, callback }) => {
     if (callback) await handleCallback(callback);
-    else if (message) await handleText(message.text, message);
+    else if (message) await handleText(message.text);
   });
+  void setBotCommands(ADMIN_COMMANDS); // register in Telegram clients on every boot
   return stop;
 }

@@ -93,6 +93,13 @@ export async function answerCallbackQuery(id, text = "") {
   return postTelegram("answerCallbackQuery", { callback_query_id: id, ...(text ? { text: String(text).slice(0, 190) } : {}) });
 }
 
+// Register the bot's command list so Telegram clients show current commands
+// instead of a stale cached set. Called on every startup by the admin console.
+export async function setBotCommands(commands) {
+  if (!TOKEN || !Array.isArray(commands) || !commands.length) return null;
+  return postTelegram("setMyCommands", { commands });
+}
+
 /**
  * Long-poll getUpdates for the admin console. Anything queued before startup
  * is skipped. Only updates from TELEGRAM_ALLOWED_USER_IDS are forwarded;
