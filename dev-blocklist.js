@@ -3,7 +3,7 @@
  *
  * Agent/user can add deployers via Telegram ("block this deployer").
  * Screening hard-filters any pool whose base token was deployed by a blocked wallet
- * before the pool list reaches the LLM.
+ * before focused screening can approve a token.
  */
 
 import fs from "fs";

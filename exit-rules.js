@@ -1,5 +1,4 @@
-// Deterministic exit sizing rules shared by the legacy manager and the
-// standalone runtime. No LLM input — these run identically in both modes.
+// Deterministic exit and sizing rules for the standalone runtime.
 
 import { config } from "./config.js";
 import { log } from "./logger.js";

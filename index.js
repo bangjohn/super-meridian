@@ -6,14 +6,6 @@ import path from "node:path";
 // Entries come only from smart-wallet convergence; the LLM/server-driven
 // flow lives on the `legacy` branch.
 
-export async function runScreeningCycle() {
-  return "Standalone mode waits for fresh smart-wallet convergence. Broad screening is disabled.";
-}
-
-export async function runManagementCycle() {
-  return (await import("./standalone/runtime.js")).manageOnce();
-}
-
 const entry = process.env.pm_exec_path || process.argv[1];
 if (entry && pathToFileURL(path.resolve(entry)).href === import.meta.url) {
   const { startStandalone } = await import("./standalone/runtime.js");

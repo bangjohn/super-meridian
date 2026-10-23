@@ -2,7 +2,7 @@
  * Pool memory — persistent deploy history per pool.
  *
  * Keyed by pool address. Automatically updated when positions close
- * (via recordPerformance in lessons.js). Agent can query before deploying.
+ * (via recordPerformance in performance.js). Agent can query before deploying.
  */
 
 import fs from "fs";
@@ -84,7 +84,7 @@ function setBaseMintCooldown(db, baseMint, hours, reason) {
 
 /**
  * Record a closed deploy into pool-memory.json.
- * Called automatically from recordPerformance() in lessons.js.
+ * Called automatically from recordPerformance() in performance.js.
  *
  * @param {string} poolAddress
  * @param {Object} deployData
