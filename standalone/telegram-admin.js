@@ -340,14 +340,20 @@ async function viewSection(sectionId, note = "") {
   await render(note ? `${menu.text}\n\n${note}` : menu.text, menu.keyboard);
 }
 
+const hostOf = url => { try { return new URL(url).host; } catch { return "?"; } };
+
 async function statusText() {
   const stats = adminContext.monitor?.stats ?? {};
   const wallets = listSmartWallets();
+  const monitorUrl = config.standalone.monitorRpcUrl || envValue("RPC_URL");
+  const balanceUrl = config.standalone.balanceRpcUrl || envValue("RPC_URL");
+  const fallbackUrl = config.standalone.fallbackRpcUrl;
   const lines = [
     `🖥 <b>Status</b>`,
     `Mode: ${config.standalone.shadow ? "🌑 SHADOW" : "🔴 LIVE"} | DRY_RUN=${process.env.DRY_RUN === "true"}`,
     `Uptime: ${Math.floor(process.uptime() / 60)} min`,
     `Wallets monitored: ${wallets.total} (trigger: ${config.standalone.walletThreshold} in ${config.standalone.windowSec}s)`,
+    `RPC: monitor=${hostOf(monitorUrl)} balance=${hostOf(balanceUrl)}${fallbackUrl ? ` fallback=${hostOf(fallbackUrl)}` : ""}`,
     `Monitor: tx=${stats.transactions ?? 0} entries=${stats.entries ?? 0} lag=${stats.lastLagMs != null ? `${(stats.lastLagMs / 1000).toFixed(1)}s` : "n/a"} errors=${stats.errors ?? 0}`,
     `Signals active: ${adminContext.activeSignals?.() ?? 0}`,
   ];
