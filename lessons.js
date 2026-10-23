@@ -185,24 +185,6 @@ export async function recordPerformance(perf) {
     });
   }
 
-  // Evolve thresholds every 5 closed positions
-  if (!config.standalone.enabled && data.performance.length % MIN_EVOLVE_POSITIONS === 0) {
-    const { config, reloadScreeningThresholds } = await import("./config.js");
-    const result = evolveThresholds(data.performance, config);
-    if (result?.changes && Object.keys(result.changes).length > 0) {
-      reloadScreeningThresholds();
-      log("evolve", `Auto-evolved thresholds: ${JSON.stringify(result.changes)}`);
-    }
-
-    // Darwinian signal weight recalculation
-    if (config.darwin?.enabled) {
-      const { recalculateWeights } = await import("./signal-weights.js");
-      const wResult = recalculateWeights(data.performance, config);
-      if (wResult.changes.length > 0) {
-        log("evolve", `Darwin: adjusted ${wResult.changes.length} signal weight(s)`);
-      }
-    }
-  }
 
   void pushHivePerformanceEvent({
     ...entry,

@@ -737,8 +737,8 @@ async function executeToolUnlocked(name, args) {
 async function runSafetyChecks(name, args) {
   switch (name) {
     case "deploy_position": {
-      if (config.standalone.enabled && typeof args.before_submit !== "function") {
-        return { pass: false, reason: "Standalone entries require a fresh wallet-convergence signal" };
+      if (typeof args.before_submit !== "function") {
+        return { pass: false, reason: "Entries require a fresh wallet-convergence signal" };
       }
       const poolThresholds = await validateDeployPoolThresholds(args);
       if (!poolThresholds.pass) return poolThresholds;

@@ -99,7 +99,7 @@ function getWallet() {
 }
 
 function shouldUseLpAgentRelay() {
-  return !config.standalone.enabled && !!config.api.lpAgentRelayEnabled;
+  return false; // LPAgent relay removed — transactions go direct on main; see the legacy branch.
 }
 
 function shouldUseLpAgentRelayForDeploy() {
@@ -476,7 +476,7 @@ export async function deployPosition({
   on_prepared,
 }) {
   pool_address = normalizeMint(pool_address);
-  if (config.standalone.enabled && typeof before_submit !== "function") throw new Error("Standalone deploy requires a wallet signal");
+  if (typeof before_submit !== "function") throw new Error("Deploy requires a wallet-signal recheck (before_submit)");
   const activeStrategy = strategy || config.strategy.strategy;
   let activeBinsBelow = bins_below ?? config.strategy.defaultBinsBelow ?? config.strategy.minBinsBelow;
   let activeBinsAbove = bins_above ?? 0;
@@ -495,7 +495,7 @@ export async function deployPosition({
   const { StrategyType, getBinIdFromPrice, getPriceOfBinByBinId } = await getDLMM();
   const pool = await getPool(pool_address);
   const baseMint = pool.lbPair.tokenXMint.toString();
-  if (config.standalone.enabled && pool.lbPair.tokenYMint.toString() !== config.tokens.SOL) throw new Error("Standalone execution requires SOL as token Y");
+  if (pool.lbPair.tokenYMint.toString() !== config.tokens.SOL) throw new Error("Execution requires SOL as token Y");
   if (isBaseMintOnCooldown(baseMint)) {
     log("deploy", `Base mint ${baseMint.slice(0, 8)} is on cooldown — skipping deploy for pool ${pool_address.slice(0, 8)}`);
     return { success: false, error: "Token on cooldown — recently closed out-of-range too many times. Try a different token." };
@@ -813,7 +813,7 @@ export async function deployPosition({
         totalXAmount: totalXLamports,
         totalYAmount: totalYLamports,
         strategy: { minBinId, maxBinId, strategyType },
-        slippage: config.standalone.enabled ? 1 : 10, // SDK expects percent
+        slippage: 1, // SDK expects percent
       });
       const addTxArray = Array.isArray(addTxs) ? addTxs : [addTxs];
       for (let i = 0; i < addTxArray.length; i++) {
@@ -830,7 +830,7 @@ export async function deployPosition({
         totalXAmount: totalXLamports,
         totalYAmount: totalYLamports,
         strategy: { maxBinId, minBinId, strategyType },
-        slippage: config.standalone.enabled ? 1 : 10, // SDK expects percent, not bps
+        slippage: 1, // SDK expects percent, not bps
       });
       await before_submit?.();
       const txHash = await sendAndConfirmTransaction(getConnection(), tx, [wallet, newPosition]);

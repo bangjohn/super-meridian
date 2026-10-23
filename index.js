@@ -1,24 +1,21 @@
 import "./envcrypt.js";
-import { config } from "./config.js";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
 
-export async function runScreeningCycle(options) {
-  if (config.standalone.enabled) return "Standalone mode waits for fresh smart-wallet convergence. Broad screening is disabled.";
-  return (await import("./legacy-index.js")).runScreeningCycle(options);
+// The standalone wallet-triggered bot is the app — there is no mode toggle.
+// Entries come only from smart-wallet convergence; the LLM/server-driven
+// flow lives on the `legacy` branch.
+
+export async function runScreeningCycle() {
+  return "Standalone mode waits for fresh smart-wallet convergence. Broad screening is disabled.";
 }
-export async function runManagementCycle(options) {
-  if (config.standalone.enabled) return (await import("./standalone/runtime.js")).manageOnce();
-  return (await import("./legacy-index.js")).runManagementCycle(options);
+
+export async function runManagementCycle() {
+  return (await import("./standalone/runtime.js")).manageOnce();
 }
+
 const entry = process.env.pm_exec_path || process.argv[1];
 if (entry && pathToFileURL(path.resolve(entry)).href === import.meta.url) {
-  if (config.standalone.enabled) {
-    const { startStandalone } = await import("./standalone/runtime.js");
-    await startStandalone();
-  } else {
-    // The legacy module detects its own filename; start explicitly via its exported launcher.
-    const { startLegacy } = await import("./legacy-index.js");
-    startLegacy();
-  }
+  const { startStandalone } = await import("./standalone/runtime.js");
+  await startStandalone();
 }

@@ -83,7 +83,7 @@ export function getHiveMindPullMode() {
 }
 
 export function isHiveMindEnabled() {
-  return !config.standalone.enabled && !!(getBaseUrl() && getApiKey());
+  return false; // Server sync removed — the LLM/server-driven flow lives on the legacy branch.
 }
 
 export function ensureAgentId() {

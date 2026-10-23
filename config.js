@@ -64,9 +64,10 @@ function nonEmptyString(...values) {
 }
 
 export const config = {
-  // Standalone is the default. Shadow mode never submits transactions.
+  // The standalone wallet-triggered bot IS the app — there is no mode toggle.
+  // The LLM/server-driven flow lives on the `legacy` branch.
+  // Shadow mode never submits transactions.
   standalone: {
-    enabled: u.standaloneEnabled !== false,
     shadow: u.shadowMode !== false,
     monitorRpcUrl: nonEmptyString(process.env.MONITOR_RPC_URL, u.monitorRpcUrl, process.env.RPC_URL),
     monitorWsUrl: nonEmptyString(process.env.MONITOR_WS_URL, u.monitorWsUrl),
@@ -286,7 +287,7 @@ export const config = {
 };
 
 // Shadow applies to every existing transaction path, including CLI commands.
-if (config.standalone.enabled && config.standalone.shadow) process.env.DRY_RUN = "true";
+if (config.standalone.shadow) process.env.DRY_RUN = "true";
 
 /**
  * Compute the optimal deploy amount for a given wallet balance.
