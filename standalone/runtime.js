@@ -20,12 +20,14 @@ import { getWalletBalances } from "../tools/wallet.js";
 import { getTrackedPositions, confirmPeak, updatePnlAndCheckExits, registerExitSignal, syncOpenPositions } from "../state.js";
 import { recordPositionSnapshot } from "../pool-memory.js";
 import { getDeterministicCloseRule, computeBinsBelow } from "../exit-rules.js";
+import { startAdmin } from "./telegram-admin.js";
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 let store = null;
 let monitor = null;
 let lockPath = null;
+let stopAdmin = null;
 let shuttingDown = false;
 let manageBusy = false;
 let pollBusy = false;
@@ -321,6 +323,7 @@ async function shutdown(signalName) {
   shuttingDown = true;
   log("runtime", `${signalName} received — shutting down`);
   for (const timer of Object.values(timers)) clearInterval(timer);
+  try { stopAdmin?.(); } catch { /* best-effort */ }
   try { await monitor?.stop(); } catch { /* best-effort */ }
   // Best-effort stop notice; never let a slow Telegram call hold shutdown.
   await Promise.race([notify(`🛑 Meridian stopped (${signalName})`), sleep(3000)]).catch(() => {});
@@ -352,6 +355,10 @@ export async function startStandalone() {
   startPnlPoller();
   startHeartbeat();
   void manageOnce();
+  stopAdmin = startAdmin({
+    monitor,
+    activeSignals: () => Object.values(store.data.signals).filter(s => !s.done).length,
+  });
 
   const trackedWallets = Object.keys(store.data.wallets).length;
   void notify(`🤖 Meridian started — ${config.standalone.shadow ? "SHADOW (nothing submitted)" : "LIVE"}\n${trackedWallets} wallet(s) monitored | trigger: ${config.standalone.walletThreshold} within ${config.standalone.windowSec}s | exits: ${config.pnl.pollIntervalSec}s poller`);
