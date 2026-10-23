@@ -161,20 +161,25 @@ function currentValue(setting) {
 
 let consoleMessageId = null;
 let lastRenderSig = null;
+let lastRenderAt = 0;
+// While the console is in active use, /menu edits it in place; once stale,
+// /menu starts a fresh message at the bottom so it's actually visible.
+const STALE_CONSOLE_MS = 5 * 60_000;
 
 // Render into the console message. Tapping any older menu message adopts it
 // as the console, so navigation never spawns new messages.
 async function render(text, keyboard) {
   const sig = `${text}\u0000${JSON.stringify(keyboard ?? [])}`;
   if (consoleMessageId != null) {
-    if (sig === lastRenderSig) return consoleMessageId; // identical content — Telegram would reject the edit
+    if (sig === lastRenderSig) { lastRenderAt = Date.now(); return consoleMessageId; }
     const res = await editMenu(consoleMessageId, text, keyboard).catch(() => null);
-    if (res?.ok) { lastRenderSig = sig; return consoleMessageId; }
+    if (res?.ok) { lastRenderSig = sig; lastRenderAt = Date.now(); return consoleMessageId; }
     consoleMessageId = null; // stale id (deleted or too old) — resend below
   }
   const sent = await sendMenu(text, keyboard);
   consoleMessageId = sent?.result?.message_id ?? null;
   lastRenderSig = consoleMessageId != null ? sig : null;
+  lastRenderAt = Date.now();
   return consoleMessageId;
 }
 
@@ -512,6 +517,11 @@ async function handleText(text) {
   const [cmd, ...args] = text.trim().split(/\s+/);
   if (cmd === "/cancel") { pending = null; return void await viewRoot("Cancelled."); }
   if (cmd === "/start" || cmd === "/help" || cmd === "/menu") {
+    // An explicit /menu must be visible: reuse the console only when it is fresh.
+    if (consoleMessageId != null && Date.now() - lastRenderAt > STALE_CONSOLE_MS) {
+      consoleMessageId = null;
+      lastRenderSig = null;
+    }
     return void await viewRoot("Commands: /addwallet <address> <name> · /removewallet <address> · /wallets · /status · /cancel");
   }
   if (cmd === "/status") return void await viewSection("status");
