@@ -53,7 +53,21 @@ Supported infrastructure overrides:
 | `OPENROUTER_API_KEY` | Optional decision-model review (OpenRouter System One) |
 | `AI_DECISION_MODEL` | Overrides `aiDecision.model` |
 
-Balances use standard RPC, including SPL Token and Token-2022. PnL defaults to Meteora portfolio and position APIs, with an on-chain fallback. Jupiter supplies prices, token data, and swaps. Telegram is notification-only; the previous agent chat and command menus are archived.
+Balances use standard RPC, including SPL Token and Token-2022. PnL defaults to Meteora portfolio and position APIs, with an on-chain fallback. Jupiter supplies prices, token data, and swaps. See [Telegram](#telegram) for notifications and in-chat commands.
+
+## Telegram
+
+1. In Telegram, message `@BotFather`, send `/newbot`, and copy the token.
+2. Message `@userinfobot` to get your numeric id. Send any message to your new bot once so it can reply to you.
+3. Add to `.env`, then restart:
+
+   ```sh
+   TELEGRAM_BOT_TOKEN=123456:ABC...
+   TELEGRAM_CHAT_ID=your_id
+   TELEGRAM_ALLOWED_USER_IDS=your_id
+   ```
+
+The bot reports start/stop, entries and shadow proposals, deploys, closes with PnL, swaps, and failures (aborted signals, failed entries, failed closes or claims; each repeats at most every 30 minutes). With `TELEGRAM_ALLOWED_USER_IDS` set, `/status`, `/menu`, `/wallets`, `/addwallet <address> <name>` and `/removewallet <address>` work in chat; messages from other users are ignored. `telegramChatId` in `user-config.json` overrides `TELEGRAM_CHAT_ID`.
 
 To enable live trading, review your thresholds, wallet list, and shadow results, set `shadowMode` to `false`, remove any `DRY_RUN=true` override, and restart. Configuration edits take effect after restart.
 

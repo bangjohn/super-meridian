@@ -46,6 +46,17 @@ async function notify(text) {
   try { if (tgEnabled()) await tgSend(text); } catch { /* notifications are best-effort */ }
 }
 
+// Error alerts repeat at most once per key per 30 minutes, so a close that
+// keeps failing every cycle does not flood the chat.
+const ERROR_ALERT_COOLDOWN_MS = 30 * 60_000;
+const lastErrorAlert = new Map();
+function notifyError(key, text) {
+  const now = Date.now();
+  if (now - (lastErrorAlert.get(key) ?? 0) < ERROR_ALERT_COOLDOWN_MS) return;
+  lastErrorAlert.set(key, now);
+  void notify(`⚠️ ${text}`);
+}
+
 // ─── Signal pursuit ──────────────────────────────────────────────────────────
 
 function onSignal(signal) {
@@ -64,6 +75,7 @@ async function drainSignals() {
       } catch (e) {
         finish(signal, `error: ${e.message}`);
         log("signal_error", `Signal ${signal.mint.slice(0, 8)} aborted: ${e.message}`);
+        notifyError(`signal:${signal.mint}`, `Signal ${signal.mint.slice(0, 8)} aborted: ${e.message}`);
       }
     }
   } finally {
@@ -203,6 +215,7 @@ async function attemptEntry(signal) {
   record.error = result?.error || result?.reason || "unknown";
   if (Array.isArray(record.txs) && record.txs.length > 0) record.note = "transaction submitted before failure — outcome uncertain";
   store.save();
+  notifyError(`deploy:${mint}`, `Entry failed: mint ${mint.slice(0, 8)} → ${pool.pool_address.slice(0, 8)} — ${record.error}${record.note ? ` (${record.note})` : ""}`);
   return `deploy failed (${record.error})`;
 }
 
@@ -271,6 +284,7 @@ export async function manageOnce() {
       const ok = res?.success !== false && !res?.error && !res?.blocked;
       if (ok && action.tool === "close_position") clearExitHold(p.position);
       log("manage", `${p.pair ?? p.position.slice(0, 8)}: ${action.label} ${ok ? "done" : `FAILED — ${res?.error || res?.reason || "unknown"}`}`);
+      if (!ok) notifyError(`${action.tool}:${p.position}`, `${p.pair ?? p.position.slice(0, 8)}: ${action.label} failed — ${res?.error || res?.reason || "unknown"}`);
     }
     return null;
   } finally {
@@ -308,6 +322,7 @@ function startPnlPoller() {
           const ok = res?.success !== false && !res?.error && !res?.blocked;
           if (ok) clearExitHold(p.position);
           log("poll", `${p.pair ?? p.position.slice(0, 8)}: ${ok ? "closed" : `close FAILED — ${res?.error || res?.reason || "unknown"}`}`);
+          if (!ok) notifyError(`close_position:${p.position}`, `${p.pair ?? p.position.slice(0, 8)}: close failed (${reason}) — ${res?.error || res?.reason || "unknown"}`);
         } finally {
           manageBusy = false;
         }
