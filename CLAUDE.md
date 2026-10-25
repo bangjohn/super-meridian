@@ -23,6 +23,7 @@ The app is the standalone wallet-triggered bot. There is no legacy mode or LLM d
 - `pool-memory.js`, `token-blacklist.js`, `dev-blocklist.js`: local history and safety filters.
 - `smart-wallets.js`: local LP watchlist CRUD.
 - `telegram.js`: outbound notifications only.
+- `standalone/ai.js`: optional decision-model review via the OpenRouter Decisions API (System One, e.g. Jev). Veto-only on rule-approved entries and soft exits; never sees stop loss; falls back to rules on any failure.
 
 ## Invariants
 
@@ -34,6 +35,7 @@ The app is the standalone wallet-triggered bot. There is no legacy mode or LLM d
 - Read fresh positions and funds before deployment. Preserve position limits, duplicate guards, range floors, and bin-array initialization checks.
 - The `minBinsBelow` floor is 35. Only token-X / SOL-token-Y pools are supported for execution.
 - Never import the old agent, prompt, HiveMind, or server adapters into the active graph.
+- The decision model may only veto, hold a soft exit for a bounded time, or choose among rule-approved pools. It must never originate an entry, change sizing, or delay a stop loss.
 - Do not edit user secrets, runtime state, or the local archive branch as part of routine refactors.
 
 ## Configuration and state
