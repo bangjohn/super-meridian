@@ -22,7 +22,7 @@ The app is the standalone wallet-triggered bot. There is no legacy mode or LLM d
 - `performance.js`: local performance accounting and pool cooldown updates. Uses the existing `lessons.json` schema, preserving historical data.
 - `pool-memory.js`, `token-blacklist.js`, `dev-blocklist.js`: local history and safety filters.
 - `smart-wallets.js`: local LP watchlist CRUD.
-- `telegram.js`: outbound notifications only.
+- `telegram.js`: notifications plus the admin-console transport (`standalone/telegram-admin.js`), polled only for `TELEGRAM_ALLOWED_USER_IDS`.
 
 ## Invariants
 
