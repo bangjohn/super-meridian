@@ -12,6 +12,18 @@ Standalone wallet-triggered Meteora DLMM bot for Solana. It waits for fresh LP e
 
 Shadow mode is the default and forces `DRY_RUN=true` for all transaction paths. It records proposals without submitting them. Read [user-config.example.json](user-config.example.json) for supported settings. Monitoring and screening implementation details are in [standalone/](standalone/).
 
+## Decision model (optional)
+
+Super Meridian can ask a decision model for a second opinion through the [OpenRouter Decisions API](https://openrouter.ai/docs/guides/community/jev), the "System One" endpoint (`POST https://openrouter.ai/api/alpha/decisions`). Decision models such as TypeSafe Jev (`typesafe/jev-1.14`) are not chat LLMs: they take the bot's data as `state` plus typed questions and return probabilities. Any decision model on OpenRouter works by changing `model`.
+
+- **Entry:** after a signal passes every rule, the model answers `open_position` (yes/no probability). When several pools passed screening, it also picks one (`best_pool` choice). Below `minEntryProbability` the signal is skipped.
+- **Exit:** take profit, trailing TP, out-of-range and low-yield exits are reviewed with `close_now`. Below `minExitProbability` the exit is held and re-asked every `exitRecheckSec`; after `maxExitHoldMinutes` it closes anyway. Stop loss is never sent to the model.
+- **Fallback:** disabled, missing key, timeout or an unusable answer means the rules decide alone (set `onError: "reject"` to skip entries instead).
+
+The model can only veto or choose among rule-approved options; it never opens a trade on its own or bypasses a guard. Pool memory is included as context. Every decision goes to `decision-log.json`.
+
+Enable it with `OPENROUTER_API_KEY` in `.env` and `aiDecision.enabled: true` in `user-config.json` (see [user-config.example.json](user-config.example.json)). Probabilities differ between models, so retune the thresholds on your shadow-mode results when switching. Pin a model version (for example `typesafe/jev-1.14`) to keep thresholds stable.
+
 ## Setup
 
 Use Node.js 18 or newer and a Solana RPC provider supporting WebSocket subscriptions and transaction history.
@@ -38,6 +50,8 @@ Supported infrastructure overrides:
 | `PNL_RPC_URL` | Optional on-chain PnL engine endpoint |
 | `JUPITER_API_KEY` | Jupiter price and swap access |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Optional outbound notifications |
+| `OPENROUTER_API_KEY` | Optional decision-model review (OpenRouter System One) |
+| `AI_DECISION_MODEL` | Overrides `aiDecision.model` |
 
 Balances use standard RPC, including SPL Token and Token-2022. PnL defaults to Meteora portfolio and position APIs, with an on-chain fallback. Jupiter supplies prices, token data, and swaps. Telegram is notification-only; the previous agent chat and command menus are archived.
 

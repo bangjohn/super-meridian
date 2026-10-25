@@ -3,7 +3,10 @@
     "Standalone wallet-triggered bot. Copy to user-config.json and edit.",
     "Omitted keys fall back to the defaults in config.js.",
     "shadowMode: true forces DRY_RUN; set false and remove DRY_RUN=true only when ready for live trading.",
-    "The previous LLM/server-driven implementation is archived on the local legacy branch."
+    "The previous LLM/server-driven implementation is archived on the local legacy branch.",
+    "aiDecision (optional, off by default): decision-model review through the OpenRouter System One Decisions API (/api/alpha/decisions). Needs OPENROUTER_API_KEY in .env.",
+    "aiDecision.model is any OpenRouter decision model, e.g. typesafe/jev-1.14 (pinned) or ~typesafe/jev-latest. Retune the probability thresholds when switching models.",
+    "The decision model can only veto: it reviews entries and soft exits that already passed the rules, may pick among rule-approved pools, never blocks stop loss, and a held exit closes after maxExitHoldMinutes."
   ],
   "shadowMode": true,
   "walletAddress": "",
@@ -78,5 +81,17 @@
   "pnlPollIntervalSec": 3,
   "pnlConfirmTicks": 2,
   "pnlRpcUrl": "https://pump.helius-rpc.com",
-  "pnlDepositCacheTtlSec": 300
+  "pnlDepositCacheTtlSec": 300,
+  "aiDecision": {
+    "enabled": false,
+    "model": "typesafe/jev-1.14",
+    "reviewEntries": true,
+    "reviewExits": true,
+    "minEntryProbability": 0.5,
+    "minExitProbability": 0.3,
+    "onError": "rules",
+    "timeoutSec": 15,
+    "exitRecheckSec": 120,
+    "maxExitHoldMinutes": 30
+  }
 }

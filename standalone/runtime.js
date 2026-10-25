@@ -1,5 +1,7 @@
 // Standalone orchestrator: monitor → convergence signal → focused screening →
-// revalidated deploy → deterministic exits. No Meridian server, no LLM authority.
+// revalidated deploy → deterministic exits. No Meridian server. An optional
+// decision model (standalone/ai.js, OpenRouter System One) can veto
+// rule-approved entries and hold soft exits; it never originates a trade.
 //
 // Entry and exit paths are independent: exits keep running while a signal is
 // being screened, and wallet mutations are serialized by the wallet lock
@@ -21,6 +23,7 @@ import { getTrackedPositions, confirmPeak, updatePnlAndCheckExits, registerExitS
 import { recordPositionSnapshot } from "../pool-memory.js";
 import { getDeterministicCloseRule, computeBinsBelow } from "../exit-rules.js";
 import { startAdmin } from "./telegram-admin.js";
+import { aiStatus, reviewEntry, exitAllowed, clearExitHold } from "./ai.js";
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -34,6 +37,10 @@ let pollBusy = false;
 let pursuing = false;
 const timers = {};
 const signalQueue = [];
+
+// store.finishSignal needs the cooldown options; calling it without them threw
+// a TypeError on every terminal signal outcome.
+const finish = (signal, reason) => finishSignal(store, signal, reason, config.standalone);
 
 async function notify(text) {
   try { if (tgEnabled()) await tgSend(text); } catch { /* notifications are best-effort */ }
@@ -55,7 +62,7 @@ async function drainSignals() {
       try {
         await pursueSignal(signal);
       } catch (e) {
-        finishSignal(store, signal, `error: ${e.message}`);
+        finish(signal, `error: ${e.message}`);
         log("signal_error", `Signal ${signal.mint.slice(0, 8)} aborted: ${e.message}`);
       }
     }
@@ -78,7 +85,7 @@ async function pursueSignal(signal) {
     if (wait > 0) await sleep(wait);
   }
   if (!signal.done) {
-    finishSignal(store, signal, lastReason);
+    finish(signal, lastReason);
     log("signal", `Signal ${signal.mint.slice(0, 8)} expired: ${lastReason}`);
   }
 }
@@ -90,11 +97,11 @@ async function attemptEntry(signal) {
   const attempt = store.data.attempts[mint];
   // One attempt chain per mint; bounded retries only for temporary failures.
   if (attempt && ["entered", "proposed", "submitting"].includes(attempt.status)) {
-    finishSignal(store, signal, `mint already attempted (${attempt.status})`);
+    finish(signal, `mint already attempted (${attempt.status})`);
     return null;
   }
   if (attempt?.status === "failed" && (attempt.failures ?? 0) >= 2) {
-    finishSignal(store, signal, "deploy failed repeatedly");
+    finish(signal, "deploy failed repeatedly");
     return null;
   }
 
@@ -102,7 +109,7 @@ async function attemptEntry(signal) {
   const positions = await getMyPositions({ force: true }).catch(() => null);
   if (!positions || positions.error || !Array.isArray(positions.positions)) return "position read unavailable";
   if (positions.positions.length >= config.risk.maxPositions) {
-    finishSignal(store, signal, "portfolio full");
+    finish(signal, "portfolio full");
     return null;
   }
 
@@ -115,7 +122,7 @@ async function attemptEntry(signal) {
   }
   if (!screened.pass) {
     if (screened.terminal) {
-      finishSignal(store, signal, `blocked: ${screened.reason}`);
+      finish(signal, `blocked: ${screened.reason}`);
       return null;
     }
     return screened.reason;
@@ -128,8 +135,23 @@ async function attemptEntry(signal) {
   if (balances.error || !Number.isFinite(balances.sol)) return "balance read unavailable";
   const amountY = computeDeployAmount(balances.sol);
   if (balances.sol < config.management.minSolToOpen + config.management.gasReserve) {
-    finishSignal(store, signal, "insufficient spendable SOL");
+    finish(signal, "insufficient spendable SOL");
     return null;
+  }
+
+  // Optional decision-model review of a fully rule-approved entry. Veto-only;
+  // it may pick among rule-approved pools. The pre-submit recheck below still
+  // runs after the (possibly slow) review, against the chosen pool.
+  const verdict = await reviewEntry({ signal, token: screened.token, pools: screened.candidates ?? [screened.pool], amountSol: amountY });
+  if (!verdict.approve) {
+    finish(signal, `ai rejected: ${verdict.reason}`);
+    log("entry", `Decision model rejected ${mint.slice(0, 8)}: ${verdict.reason}`);
+    void notify(`🧠 Decision model skipped entry: mint ${mint.slice(0, 8)} — ${verdict.reason}`);
+    return null;
+  }
+  if (verdict.pool && verdict.pool !== screened.pool) {
+    log("entry", `Decision model picked pool ${verdict.pool.pool_address.slice(0, 8)} over ${screened.pool.pool_address.slice(0, 8)}`);
+    screened = { ...screened, pool: verdict.pool };
   }
 
   const pool = screened.pool;
@@ -169,7 +191,7 @@ async function attemptEntry(signal) {
     record.txs = result.txs ?? [];
     record.amountSol = amountY;
     store.save();
-    finishSignal(store, signal, record.status === "proposed" ? "shadow proposal recorded" : "entered");
+    finish(signal, record.status === "proposed" ? "shadow proposal recorded" : "entered");
     const label = result.dry_run ? "[SHADOW] Would deploy" : "Deployed";
     log("entry", `${label} ${amountY} SOL → pool ${pool.pool_address.slice(0, 8)} mint ${mint.slice(0, 8)} (${binsBelow} bins below, ${signal.events.length}-wallet convergence)`);
     void notify(`${result.dry_run ? "🕯️ Shadow proposal" : "✅ Entry"}: ${amountY} SOL → ${pool.pool_address.slice(0, 8)} (mint ${mint.slice(0, 8)}, ${signal.events.length} wallets)`);
@@ -211,7 +233,7 @@ async function finalRecheck(signal, screened) {
   return null;
 }
 
-// ─── Exits (deterministic, no LLM) ──────────────────────────────────────────
+// ─── Exits (deterministic; decision model may hold soft exits, never stop loss)
 
 // One management pass: trailing/rule exits and fee claims. Never triggers
 // screening — an empty portfolio just waits for the next convergence signal.
@@ -236,7 +258,9 @@ export async function manageOnce() {
         ? { action: "CLOSE", rule: "exit", reason: exit.reason }
         : getDeterministicCloseRule(p, config.management);
       let action = null;
-      if (closeRule?.action === "CLOSE") {
+      if (closeRule?.action === "CLOSE" && !(await exitAllowed(p, exit ?? { action: `RULE_${closeRule.rule}`, reason: closeRule.reason }))) {
+        log("manage", `${p.pair ?? p.position.slice(0, 8)}: decision model holding exit (${closeRule.reason})`);
+      } else if (closeRule?.action === "CLOSE") {
         action = { tool: "close_position", args: { position_address: p.position, reason: closeRule.reason }, label: `close (${closeRule.reason})` };
       } else if ((p.unclaimed_fees_usd ?? 0) >= config.management.minClaimAmount) {
         action = { tool: "claim_fees", args: { position_address: p.position }, label: "claim fees" };
@@ -245,6 +269,7 @@ export async function manageOnce() {
       if (!action) continue;
       const res = await executeTool(action.tool, action.args).catch(e => ({ error: e.message }));
       const ok = res?.success !== false && !res?.error && !res?.blocked;
+      if (ok && action.tool === "close_position") clearExitHold(p.position);
       log("manage", `${p.pair ?? p.position.slice(0, 8)}: ${action.label} ${ok ? "done" : `FAILED — ${res?.error || res?.reason || "unknown"}`}`);
     }
     return null;
@@ -273,12 +298,15 @@ function startPnlPoller() {
         if (exit) { signal = exit.action ?? "EXIT"; reason = exit.reason; }
         else if (closeRule) { signal = `RULE_${closeRule.rule}`; reason = closeRule.reason; }
         const { fire } = registerExitSignal(p.position, signal, confirmTicks);
+        if (!signal) clearExitHold(p.position);
         if (!signal || !fire) continue;
+        if (!(await exitAllowed(p, { action: signal, reason }))) continue;
         log("poll", `Exit confirmed (${confirmTicks} ticks): ${p.pair ?? p.position.slice(0, 8)} — ${reason} — closing`);
         manageBusy = true; // hold the slow cycle off this position
         try {
           const res = await executeTool("close_position", { position_address: p.position, reason }).catch(e => ({ error: e.message }));
           const ok = res?.success !== false && !res?.error && !res?.blocked;
+          if (ok) clearExitHold(p.position);
           log("poll", `${p.pair ?? p.position.slice(0, 8)}: ${ok ? "closed" : `close FAILED — ${res?.error || res?.reason || "unknown"}`}`);
         } finally {
           manageBusy = false;
@@ -343,6 +371,10 @@ export async function startStandalone() {
   }
 
   monitor = new WalletMonitor(store, config.standalone, { onSignal });
+  const ai = aiStatus();
+  log("runtime", ai.active
+    ? `Decision model ON — ${config.ai.model} via OpenRouter System One (entries ${config.ai.reviewEntries ? "on" : "off"}, exits ${config.ai.reviewExits ? "on" : "off"})`
+    : `Decision model off (${ai.why}) — rule-only decisions`);
   log("runtime", `Standalone starting — ${config.standalone.shadow ? "SHADOW MODE (proposals recorded, nothing submitted)" : "LIVE MODE"} | threshold=${config.standalone.walletThreshold} wallets / ${config.standalone.windowSec}s window | screening deadline=${config.standalone.screeningDeadlineSec}s`);
 
   await monitor.start();
