@@ -161,6 +161,27 @@ export const config = {
     confirmTicks: Number(u.pnlConfirmTicks ?? 2),
   },
 
+  // ─── Decision-model review (optional, OpenRouter System One) ──
+  // Reviews entries and soft exits that already passed the rules; veto-only.
+  // Off unless aiDecision.enabled is true and OPENROUTER_API_KEY is set.
+  ai: (() => {
+    const a = u.aiDecision ?? {};
+    return {
+      enabled: a.enabled === true,
+      apiKey: nonEmptyString(process.env.OPENROUTER_API_KEY) ?? "",
+      model: nonEmptyString(process.env.AI_DECISION_MODEL, a.model, "typesafe/jev-1.14"),
+      decisionsUrl: nonEmptyString(a.decisionsUrl, "https://openrouter.ai/api/alpha/decisions"),
+      reviewEntries: a.reviewEntries !== false,
+      reviewExits: a.reviewExits !== false,
+      minEntryProbability: Number(a.minEntryProbability ?? 0.5),
+      minExitProbability: Number(a.minExitProbability ?? 0.3),
+      onError: a.onError === "reject" ? "reject" : "rules",
+      timeoutSec: Number(a.timeoutSec ?? 15),
+      exitRecheckSec: Number(a.exitRecheckSec ?? 120),
+      maxExitHoldMinutes: Number(a.maxExitHoldMinutes ?? 30),
+    };
+  })(),
+
   jupiter: {
     // Internal Jupiter Ultra settings; override by env only, do not expose in user-config.
     apiKey: process.env.JUPITER_API_KEY ?? "",

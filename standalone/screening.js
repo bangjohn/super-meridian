@@ -93,5 +93,5 @@ export async function screenMint(mint, { poolAddress = null } = {}) {
     } catch (e) { rejected.push(e.message); }
   }
   candidates.sort((a, b) => b.fee_active_tvl_ratio - a.fee_active_tvl_ratio || b.active_tvl - a.active_tvl || a.pool_address.localeCompare(b.pool_address));
-  return candidates.length ? { pass: true, pool: candidates[0], token, fetchedAt: Date.now() } : { pass: false, reason: rejected.slice(0, 3).join('; ') || 'No eligible token/SOL pool' };
+  return candidates.length ? { pass: true, pool: candidates[0], candidates: candidates.slice(0, 5), token, fetchedAt: Date.now() } : { pass: false, reason: rejected.slice(0, 3).join('; ') || 'No eligible token/SOL pool' };
 }
