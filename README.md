@@ -37,8 +37,7 @@ Supported infrastructure overrides:
 | `PNL_SOURCE` | `meteora` (default) or `rpc` |
 | `PNL_RPC_URL` | Optional on-chain PnL engine endpoint |
 | `JUPITER_API_KEY` | Jupiter price and swap access |
-| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Optional Telegram notifications |
-| `TELEGRAM_ALLOWED_USER_IDS` | Optional; enables Telegram commands for these user ids |
+| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Optional outbound notifications |
 
 Balances use standard RPC, including SPL Token and Token-2022. PnL defaults to Meteora portfolio and position APIs, with an on-chain fallback. Jupiter supplies prices, token data, and swaps. See [Telegram](#telegram) for notifications and in-chat commands.
 
