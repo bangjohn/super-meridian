@@ -109,6 +109,13 @@ console.log("\n[2] acceptEvents / finishSignal — thresholds, cooldowns, dedup"
   ], options, afterCooldown);
   check("fresh events re-trigger after cooldown", retriggerFresh.length === 1);
 
+  // Regression: the runtime once called finishSignal without options, so every
+  // finished signal threw on options.cooldownSec and escaped drainSignals.
+  const runtimeSrc = fs.readFileSync(new URL("../standalone/runtime.js", import.meta.url), "utf8");
+  const calls = runtimeSrc.split("\n").filter(l => /\bfinishSignal\(store,/.test(l));
+  check("runtime passes options to every finishSignal call", calls.length > 0 && calls.every(l => l.includes("config.standalone")), calls.filter(l => !l.includes("config.standalone")).join("\n"));
+  check("config provides a numeric signal cooldown", Number.isFinite(config.standalone.cooldownSec));
+
   // Restart recovery: a new store instance must load the same history.
   const reopened = new MonitorStore(file);
   check("state persists across restart", reopened.data.events.length === store.data.events.length && reopened.data.signals[MINT] != null);
