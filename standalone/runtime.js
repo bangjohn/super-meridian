@@ -55,7 +55,7 @@ async function drainSignals() {
       try {
         await pursueSignal(signal);
       } catch (e) {
-        finishSignal(store, signal, `error: ${e.message}`);
+        finishSignal(store, signal, `error: ${e.message}`, config.standalone);
         log("signal_error", `Signal ${signal.mint.slice(0, 8)} aborted: ${e.message}`);
       }
     }
@@ -78,7 +78,7 @@ async function pursueSignal(signal) {
     if (wait > 0) await sleep(wait);
   }
   if (!signal.done) {
-    finishSignal(store, signal, lastReason);
+    finishSignal(store, signal, lastReason, config.standalone);
     log("signal", `Signal ${signal.mint.slice(0, 8)} expired: ${lastReason}`);
   }
 }
@@ -90,11 +90,11 @@ async function attemptEntry(signal) {
   const attempt = store.data.attempts[mint];
   // One attempt chain per mint; bounded retries only for temporary failures.
   if (attempt && ["entered", "proposed", "submitting"].includes(attempt.status)) {
-    finishSignal(store, signal, `mint already attempted (${attempt.status})`);
+    finishSignal(store, signal, `mint already attempted (${attempt.status})`, config.standalone);
     return null;
   }
   if (attempt?.status === "failed" && (attempt.failures ?? 0) >= 2) {
-    finishSignal(store, signal, "deploy failed repeatedly");
+    finishSignal(store, signal, "deploy failed repeatedly", config.standalone);
     return null;
   }
 
@@ -102,7 +102,7 @@ async function attemptEntry(signal) {
   const positions = await getMyPositions({ force: true }).catch(() => null);
   if (!positions || positions.error || !Array.isArray(positions.positions)) return "position read unavailable";
   if (positions.positions.length >= config.risk.maxPositions) {
-    finishSignal(store, signal, "portfolio full");
+    finishSignal(store, signal, "portfolio full", config.standalone);
     return null;
   }
 
@@ -115,7 +115,7 @@ async function attemptEntry(signal) {
   }
   if (!screened.pass) {
     if (screened.terminal) {
-      finishSignal(store, signal, `blocked: ${screened.reason}`);
+      finishSignal(store, signal, `blocked: ${screened.reason}`, config.standalone);
       return null;
     }
     return screened.reason;
@@ -128,7 +128,7 @@ async function attemptEntry(signal) {
   if (balances.error || !Number.isFinite(balances.sol)) return "balance read unavailable";
   const amountY = computeDeployAmount(balances.sol);
   if (balances.sol < config.management.minSolToOpen + config.management.gasReserve) {
-    finishSignal(store, signal, "insufficient spendable SOL");
+    finishSignal(store, signal, "insufficient spendable SOL", config.standalone);
     return null;
   }
 
@@ -169,7 +169,7 @@ async function attemptEntry(signal) {
     record.txs = result.txs ?? [];
     record.amountSol = amountY;
     store.save();
-    finishSignal(store, signal, record.status === "proposed" ? "shadow proposal recorded" : "entered");
+    finishSignal(store, signal, record.status === "proposed" ? "shadow proposal recorded" : "entered", config.standalone);
     const label = result.dry_run ? "[SHADOW] Would deploy" : "Deployed";
     log("entry", `${label} ${amountY} SOL → pool ${pool.pool_address.slice(0, 8)} mint ${mint.slice(0, 8)} (${binsBelow} bins below, ${signal.events.length}-wallet convergence)`);
     void notify(`${result.dry_run ? "🕯️ Shadow proposal" : "✅ Entry"}: ${amountY} SOL → ${pool.pool_address.slice(0, 8)} (mint ${mint.slice(0, 8)}, ${signal.events.length} wallets)`);
